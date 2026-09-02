@@ -16,6 +16,7 @@ class StepResult:
     correlation_status: str = "not_applicable"  # "matched" | "failed" | "not_applicable"
     trace_id: str | None = None
     spans: list = field(default_factory=list)
+    correlation_error: str | None = None  # set when correlation raised
 
 
 @dataclass

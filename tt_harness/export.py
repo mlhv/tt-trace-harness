@@ -3,32 +3,37 @@ import dataclasses
 import json
 
 
+def run_record(run) -> dict:
+    """The runs.jsonl representation of a single run."""
+    return {
+        "run_id": run.run_id,
+        "workflow": run.workflow,
+        "inputs": run.inputs,
+        "success": run.success,
+        "failure_reason": run.failure_reason,
+        "steps": [
+            {
+                "step_name": s.step_name,
+                "endpoint": s.endpoint,
+                "start": s.start,
+                "end": s.end,
+                "success": s.success,
+                "error": s.error,
+                "correlate": s.correlate,
+                "correlation_status": s.correlation_status,
+                "correlation_error": s.correlation_error,
+                "trace_id": s.trace_id,
+                "spans": s.spans,
+            }
+            for s in run.steps
+        ],
+    }
+
+
 def write_runs_jsonl(runs: list, path: str) -> None:
     with open(path, "w") as f:
         for run in runs:
-            record = {
-                "run_id": run.run_id,
-                "workflow": run.workflow,
-                "inputs": run.inputs,
-                "success": run.success,
-                "failure_reason": run.failure_reason,
-                "steps": [
-                    {
-                        "step_name": s.step_name,
-                        "endpoint": s.endpoint,
-                        "start": s.start,
-                        "end": s.end,
-                        "success": s.success,
-                        "error": s.error,
-                        "correlate": s.correlate,
-                        "correlation_status": s.correlation_status,
-                        "trace_id": s.trace_id,
-                        "spans": s.spans,
-                    }
-                    for s in run.steps
-                ],
-            }
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(run_record(run)) + "\n")
 
 
 def write_runs_summary_csv(runs: list, path: str) -> None:

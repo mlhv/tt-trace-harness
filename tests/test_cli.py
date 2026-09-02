@@ -28,8 +28,11 @@ class FakeRunner:
         self._results = results
         self.run_many_calls = []
 
-    def run_many(self, definition, count, run_id_fn=None):
+    def run_many(self, definition, count, run_id_fn=None, on_result=None):
         self.run_many_calls.append((definition.name, count))
+        for i, result in enumerate(self._results):
+            if on_result is not None:
+                on_result(i, result)
         return self._results
 
 
