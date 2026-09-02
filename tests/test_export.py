@@ -36,6 +36,24 @@ def test_write_runs_jsonl_writes_one_json_object_per_line(tmp_path):
     rec2 = json.loads(lines[1])
     assert rec2["success"] is False
     assert rec2["failure_reason"] == "preserve failed: boom"
+    assert rec1["steps"][0]["correlation_error"] is None
+
+
+def test_write_runs_jsonl_records_why_correlation_failed(tmp_path):
+    """C2: the reason a correlation blew up must reach disk, not just stderr."""
+    path = tmp_path / "runs.jsonl"
+    step = StepResult("login", "/api/v1/users/login", start=1000.0, end=1000.5, success=True,
+                      error=None, outputs={}, correlate=True,
+                      correlation_status="failed",
+                      correlation_error="URLError: <urlopen error [Errno 111] Connection refused>")
+    run = RunResult(run_id="r1", workflow="preserve", inputs={}, success=True,
+                    steps=[step], failure_reason=None)
+
+    write_runs_jsonl([run], str(path))
+
+    rec = json.loads(path.read_text().strip())
+    assert rec["steps"][0]["correlation_status"] == "failed"
+    assert "Connection refused" in rec["steps"][0]["correlation_error"]
 
 
 def test_write_runs_summary_csv_has_expected_columns(tmp_path):
