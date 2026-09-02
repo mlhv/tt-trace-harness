@@ -1,6 +1,11 @@
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
+
+
+def _utc_minute(epoch_ms: float) -> str:
+    """Format epoch milliseconds as OAP's 'yyyy-MM-dd HHmm', in UTC."""
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H%M")
 
 
 @dataclass
@@ -12,11 +17,17 @@ class CorrelationResult:
 
 class TraceCorrelator:
     def __init__(self, sw_client, pad_seconds: float = 3.0, max_wait_seconds: float = 15.0,
-                 retry_interval_seconds: float = 2.0, now_fn=time.time, sleep_fn=time.sleep):
+                 retry_interval_seconds: float = 2.0, page_size: int = 100,
+                 now_fn=time.time, sleep_fn=time.sleep):
         self.sw_client = sw_client
         self.pad_seconds = pad_seconds
         self.max_wait_seconds = max_wait_seconds
         self.retry_interval_seconds = retry_interval_seconds
+        # All filtering is client-side, so the target trace must actually be on
+        # the page we fetch. The client default of 20 is easily exhausted by
+        # background cluster traffic within the query window, which shows up as
+        # a spurious correlation failure that looks like ingestion lag.
+        self.page_size = page_size
         self.now_fn = now_fn
         self.sleep_fn = sleep_fn
 
@@ -37,9 +48,18 @@ class TraceCorrelator:
             self.sleep_fn(self.retry_interval_seconds)
 
     def _find_candidates(self, step, start_ms: int, end_ms: int) -> list[dict]:
-        window_start = datetime.fromtimestamp(start_ms / 1000).strftime("%Y-%m-%d %H%M")
-        window_end = datetime.fromtimestamp(end_ms / 1000 + 60).strftime("%Y-%m-%d %H%M")
-        traces = self.sw_client.query_basic_traces(start=window_start, end=window_end)
+        # OAP's queryDuration strings carry no offset, so they are interpreted in
+        # the OAP server's own timezone -- which is UTC unless TZ is set on the
+        # container. Build them explicitly in UTC rather than in the harness
+        # host's local timezone, so the window does not silently shift with
+        # wherever the harness happens to run. (Symptom of a mismatch: every
+        # step records correlation_status="failed" with an otherwise healthy
+        # cluster -- check the OAP container's TZ.) Note the final filter below
+        # is on absolute epoch ms and is unaffected either way.
+        window_start = _utc_minute(start_ms)
+        window_end = _utc_minute(end_ms + 60_000)
+        traces = self.sw_client.query_basic_traces(start=window_start, end=window_end,
+                                                   page_size=self.page_size)
         return [
             t for t in traces
             if any(step.endpoint in name for name in t.get("endpointNames", []))

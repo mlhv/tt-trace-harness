@@ -19,6 +19,26 @@ SEAT_TYPES = [2, 3]  # SeatClass.FIRSTCLASS, SeatClass.SECONDCLASS
 
 
 def randomize_inputs(gateway) -> dict:
+    # KNOWN LIMITATION (low yield): this samples uniformly over ALL routes
+    # ts-route-service knows about, not over routes that actually have trips.
+    # TrainTicket's seed data only provisions trips for a subset of station
+    # pairs, so many route/date combinations return zero trips and do_preserve
+    # raises "no trips found". That degrades safely -- the run is recorded as a
+    # failure and the batch continues -- but it can waste much of a large batch.
+    #
+    # The legacy Selenium suite this mirrors (old-docs/ts-ui-test/.../
+    # TestFlowOne.java, referenced by the implementation plan but not vendored
+    # into this repo) used a FIXED route instead. No known-good route list is
+    # available here to sample from. The one data point we do have is the
+    # captured cluster export ~/skywalking-exports/traces_2026-08-17.jsonl,
+    # where the only completed preserves resolved stations "nanjing" and
+    # "shanghai" on train GaoTieOne -- but those are ts-station-service ids,
+    # and list_routes() returns differently-formatted station names, so the
+    # pair is not transcribed here rather than guessed at.
+    #
+    # Before running a large batch, measure the yield (runs_summary.csv's
+    # failure_reason column) and, if it is poor, narrow this to an allowlist of
+    # pairs empirically confirmed to have trips on the target cluster.
     routes = gateway.list_routes()
     route = random.choice(routes)
     departure = date.today() + timedelta(days=random.randint(5, 30))
