@@ -35,8 +35,14 @@ class WorkflowRunner:
                 return RunResult(run_id, definition.name, inputs, False, step_results, str(e))
 
             end = self.now_fn()
+            # A step whose actual HTTP call varies at runtime (e.g. preserve
+            # vs. preserveOther, chosen by which trip got randomly picked)
+            # can report the endpoint it really hit via this reserved output
+            # key, so correlation matches against the real trace instead of
+            # the step's nominal endpoint.
+            endpoint = outputs.pop("_endpoint", step.endpoint)
             context.update(outputs)
-            result = StepResult(step.name, step.endpoint, start, end, True, None, outputs, step.correlate)
+            result = StepResult(step.name, endpoint, start, end, True, None, outputs, step.correlate)
             if self.correlator is not None and result.correlate:
                 self._correlate(result)
             step_results.append(result)

@@ -55,12 +55,46 @@ def test_search_left_hits_travel2_path_for_travel2_service():
     assert trips[0]["tripId"]["type"] == "Z"
 
 
+def test_preserve_other_hits_the_preserve_other_service_path():
+    captured = {}
+
+    def fake_request_json(method, url, *, headers=None, json_body=None, timeout=15.0):
+        captured.update(method=method, url=url, json_body=json_body, headers=headers)
+        return {"status": 1, "msg": "Success.", "data": "Success."}
+
+    order = {"accountId": "a1", "tripId": "Z99"}
+    with patch("tt_harness.client_gateway.request_json", side_effect=fake_request_json):
+        resp = _client().preserve_other(order, "tok")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://gw/api/v1/preserveotherservice/preserveOther"
+    assert captured["json_body"] == order
+    assert captured["headers"] == {"Authorization": "Bearer tok"}
+    assert resp["status"] == 1
+
+
 def test_find_notpaid_order_returns_last_match():
     orders = [
-        {"id": "o1", "trainNumber": "G1", "travelDate": "2026-09-10"},
-        {"id": "o2", "trainNumber": "G1", "travelDate": "2026-09-10"},
-        {"id": "o3", "trainNumber": "G2", "travelDate": "2026-09-10"},
+        {"id": "o1", "trainNumber": "G1", "travelDate": "2026-09-10", "status": 0},
+        {"id": "o2", "trainNumber": "G1", "travelDate": "2026-09-10", "status": 0},
+        {"id": "o3", "trainNumber": "G2", "travelDate": "2026-09-10", "status": 0},
     ]
+    captured = {}
+
+    def fake_request_json(method, url, *, headers=None, json_body=None, timeout=15.0):
+        captured["json_body"] = json_body
+        return {"status": 1, "msg": "ok", "data": orders}
+
+    with patch("tt_harness.client_gateway.request_json", side_effect=fake_request_json):
+        order = _client().find_notpaid_order("acct", "G1", "2026-09-10", "tok")
+
+    assert order["id"] == "o2"
+    # server-side state filtering NPEs on this cluster -- filter client-side instead.
+    assert captured["json_body"]["enableStateQuery"] is False
+
+
+def test_find_notpaid_order_ignores_non_notpaid_status():
+    orders = [{"id": "o1", "trainNumber": "G1", "travelDate": "2026-09-10", "status": 1}]
 
     def fake_request_json(method, url, *, headers=None, json_body=None, timeout=15.0):
         return {"status": 1, "msg": "ok", "data": orders}
@@ -68,7 +102,7 @@ def test_find_notpaid_order_returns_last_match():
     with patch("tt_harness.client_gateway.request_json", side_effect=fake_request_json):
         order = _client().find_notpaid_order("acct", "G1", "2026-09-10", "tok")
 
-    assert order["id"] == "o2"
+    assert order is None
 
 
 def test_find_notpaid_order_returns_none_when_no_match():

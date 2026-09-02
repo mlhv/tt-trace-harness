@@ -83,7 +83,7 @@ def _definition():
 
 def test_real_runner_and_correlator_produce_a_matched_step_result():
     basic = [{"endpointNames": ["POST:/api/v1/preserveservice/preserve"],
-              "start": int(STEP_START * 1000), "traceIds": [TRACE_ID]}]
+              "start": str(int(STEP_START * 1000)), "traceIds": [TRACE_ID]}]
     sw = FakeSkyWalkingClient(basic, trace_by_id={TRACE_ID: TRACE_SPANS})
     sw_now, sw_sleep = _correlator_clock()
     correlator = TraceCorrelator(sw, now_fn=sw_now, sleep_fn=sw_sleep)

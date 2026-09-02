@@ -73,19 +73,44 @@ class GatewayClient:
             headers=self._auth(token), json_body=order, timeout=self.timeout,
         )
 
-    def find_notpaid_order(self, account_id: str, trip_id: str, travel_date: str, token: str) -> dict | None:
+    def preserve_other(self, order: dict, token: str) -> dict:
+        return request_json(
+            "POST", f"{self.base_url}/api/v1/preserveotherservice/preserveOther",
+            headers=self._auth(token), json_body=order, timeout=self.timeout,
+        )
+
+    def _find_notpaid_order(self, path: str, account_id: str, trip_id: str,
+                             travel_date: str, token: str) -> dict | None:
+        # The server-side state filter (enableStateQuery=True) NPEs
+        # deterministically on this cluster -- reproduced even with a single
+        # freshly created order on a brand-new account, on both
+        # ts-order-service and ts-order-other-service. Fetch unfiltered
+        # (enableStateQuery=False, which returns the same rows incl. a
+        # `status` field) and filter for NOTPAID (status 0) here.
         resp = request_json(
-            "POST", f"{self.base_url}/api/v1/orderservice/order/query",
+            "POST", f"{self.base_url}/api/v1/{path}",
             headers=self._auth(token),
             json_body={
-                "loginId": account_id, "enableStateQuery": True, "state": 0,
+                "loginId": account_id, "enableStateQuery": False, "state": 0,
                 "enableBoughtDateQuery": False, "enableTravelDateQuery": False,
             },
             timeout=self.timeout,
         )
         orders = resp.get("data") or []
-        matches = [o for o in orders if o.get("trainNumber") == trip_id and o.get("travelDate") == travel_date]
+        matches = [
+            o for o in orders
+            if o.get("status") == 0 and o.get("trainNumber") == trip_id and o.get("travelDate") == travel_date
+        ]
         return matches[-1] if matches else None
+
+    def find_notpaid_order(self, account_id: str, trip_id: str, travel_date: str, token: str) -> dict | None:
+        """Orders booked via preserve() (travelservice/G,D trips)."""
+        return self._find_notpaid_order("orderservice/order/query", account_id, trip_id, travel_date, token)
+
+    def find_notpaid_order_other(self, account_id: str, trip_id: str, travel_date: str, token: str) -> dict | None:
+        """Orders booked via preserve_other() (travel2service/Z,T,K trips) --
+        these live in a separate table, queried through a separate service."""
+        return self._find_notpaid_order("orderOtherService/orderOther/query", account_id, trip_id, travel_date, token)
 
     def pay(self, order_id: str, trip_id: str, user_id: str, price: str, token: str) -> dict:
         return request_json(

@@ -40,7 +40,7 @@ def _clock_and_sleep():
 
 def test_unambiguous_match_returns_matched():
     step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/users/login")
-    traces = [{"endpointNames": ["POST:/api/v1/users/login"], "start": 1000500, "traceIds": ["t1"]}]
+    traces = [{"endpointNames": ["POST:/api/v1/users/login"], "start": "1000500", "traceIds": ["t1"]}]
     sw = FakeSkyWalkingClient([traces], trace_by_id={"t1": [{"spanId": 0}]})
     now, sleep = _clock_and_sleep()
 
@@ -57,8 +57,8 @@ def test_multiple_candidates_picks_closest_start_to_step_start():
     step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/users/login")
     step_start_ms = 1000000
     traces = [
-        {"endpointNames": ["POST:/api/v1/users/login"], "start": step_start_ms + 900, "traceIds": ["far"]},
-        {"endpointNames": ["POST:/api/v1/users/login"], "start": step_start_ms + 100, "traceIds": ["close"]},
+        {"endpointNames": ["POST:/api/v1/users/login"], "start": str(step_start_ms + 900), "traceIds": ["far"]},
+        {"endpointNames": ["POST:/api/v1/users/login"], "start": str(step_start_ms + 100), "traceIds": ["close"]},
     ]
     sw = FakeSkyWalkingClient([traces], trace_by_id={"close": [{"spanId": 1}]})
     now, sleep = _clock_and_sleep()
@@ -68,6 +68,83 @@ def test_multiple_candidates_picks_closest_start_to_step_start():
 
     assert result.status == "matched"
     assert result.trace_id == "close"
+
+
+def test_prefers_richer_trace_over_closer_but_empty_gateway_stub():
+    """ts-gateway-service (Zuul/Hystrix) doesn't propagate trace context, so
+    every request through it produces two disconnected SkyWalking traces for
+    the same endpoint: a near-instant, near-zero-duration stub for the
+    gateway's own proxy hop (which starts marginally closer to our measured
+    step.start, since it truly is the first thing that happens), and a
+    separate, richer trace independently rooted by the backend service that
+    actually did the work. The richer one must win even though it starts
+    farther from step.start."""
+    step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/travelservice/trips/left")
+    step_start_ms = 1000000
+    traces = [
+        {"endpointNames": ["POST:/api/v1/travelservice/trips/left"],
+         "start": str(step_start_ms + 5), "duration": 1, "traceIds": ["gateway-stub"]},
+        {"endpointNames": ["POST:/api/v1/travelservice/trips/left"],
+         "start": str(step_start_ms + 6), "duration": 44, "traceIds": ["real-trace"]},
+    ]
+    sw = FakeSkyWalkingClient([traces], trace_by_id={"real-trace": [{"spanId": 1}, {"spanId": 2}]})
+    now, sleep = _clock_and_sleep()
+
+    correlator = TraceCorrelator(sw, now_fn=now, sleep_fn=sleep)
+    result = correlator.correlate(step)
+
+    assert result.status == "matched"
+    assert result.trace_id == "real-trace"
+    assert result.spans == [{"spanId": 1}, {"spanId": 2}]
+
+
+def test_keeps_polling_past_a_lone_gateway_stub_until_the_real_trace_lands():
+    """The richer trace can take longer than the gateway stub to be ingested
+    by OAP: querying right after the step completes may find ONLY the stub
+    (not because it's the right answer, but because the real one isn't
+    indexed yet). Must not settle for the stub while there's still time on
+    the clock to find something better."""
+    step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/travelservice/trips/left")
+    step_start_ms = 1000000
+    stub_only = [{"endpointNames": ["POST:/api/v1/travelservice/trips/left"],
+                  "start": str(step_start_ms + 5), "duration": 1, "traceIds": ["gateway-stub"]}]
+    with_real = stub_only + [{"endpointNames": ["POST:/api/v1/travelservice/trips/left"],
+                               "start": str(step_start_ms + 6), "duration": 44, "traceIds": ["real-trace"]}]
+    sw = FakeSkyWalkingClient(
+        [stub_only, with_real],
+        trace_by_id={
+            "gateway-stub": [{"spanId": 0, "serviceCode": "ts-gateway-service"}],
+            "real-trace": [{"spanId": 1}, {"spanId": 2}],
+        },
+    )
+    now, sleep = _clock_and_sleep()
+
+    correlator = TraceCorrelator(sw, max_wait_seconds=15.0, retry_interval_seconds=2.0, now_fn=now, sleep_fn=sleep)
+    result = correlator.correlate(step)
+
+    assert result.status == "matched"
+    assert result.trace_id == "real-trace"
+    assert sw.query_basic_traces_calls == 2
+
+
+def test_settles_for_the_gateway_stub_once_the_deadline_is_reached():
+    """If the real trace never shows up within max_wait_seconds, the stub is
+    still better than nothing -- return it as matched, not failed."""
+    step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/travelservice/trips/left")
+    step_start_ms = 1000000
+    stub_only = [{"endpointNames": ["POST:/api/v1/travelservice/trips/left"],
+                  "start": str(step_start_ms + 5), "duration": 1, "traceIds": ["gateway-stub"]}]
+    sw = FakeSkyWalkingClient(
+        [stub_only, stub_only, stub_only],
+        trace_by_id={"gateway-stub": [{"spanId": 0, "serviceCode": "ts-gateway-service"}]},
+    )
+    now, sleep = _clock_and_sleep()
+
+    correlator = TraceCorrelator(sw, max_wait_seconds=5.0, retry_interval_seconds=2.0, now_fn=now, sleep_fn=sleep)
+    result = correlator.correlate(step)
+
+    assert result.status == "matched"
+    assert result.trace_id == "gateway-stub"
 
 
 def test_no_candidates_after_max_wait_returns_failed():
@@ -86,7 +163,7 @@ def test_no_candidates_after_max_wait_returns_failed():
 def test_retry_then_match_succeeds_on_second_attempt():
     step = FakeStep(start=1000.0, end=1001.0, endpoint="/api/v1/users/login")
     step_start_ms = 1000000
-    traces = [{"endpointNames": ["POST:/api/v1/users/login"], "start": step_start_ms + 100, "traceIds": ["t2"]}]
+    traces = [{"endpointNames": ["POST:/api/v1/users/login"], "start": str(step_start_ms + 100), "traceIds": ["t2"]}]
     sw = FakeSkyWalkingClient([[], traces], trace_by_id={"t2": [{"spanId": 2}]})
     now, sleep = _clock_and_sleep()
 

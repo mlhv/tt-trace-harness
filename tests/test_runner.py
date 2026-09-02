@@ -50,6 +50,26 @@ def test_run_once_success_records_steps_and_calls_correlator_for_correlate_true_
     assert result.steps[1].correlation_status == "not_applicable"
 
 
+def test_step_can_override_its_correlation_endpoint_via_reserved_output_key():
+    """A step whose real HTTP call is only known at run time (e.g. preserve
+    vs. preserveOther) reports it via `_endpoint`, and that must be used for
+    correlation instead of the step's nominal endpoint -- and must not leak
+    into the recorded outputs or the shared context."""
+    def build_steps(gateway, inputs):
+        return [WorkflowStep("preserve", "/api/v1/preserveservice/preserve",
+                              lambda ctx: {"trip_id": "Z1", "_endpoint": "/api/v1/preserveotherservice/preserveOther"},
+                              correlate=True)]
+
+    definition = WorkflowDefinition(name="wf", randomize_inputs=lambda gw: {}, build_steps=build_steps)
+    correlator = FakeCorrelator()
+    runner = WorkflowRunner(gateway=None, correlator=correlator, now_fn=_clock())
+
+    result = runner.run_once(definition, run_id="run1")
+
+    assert result.steps[0].endpoint == "/api/v1/preserveotherservice/preserveOther"
+    assert result.steps[0].outputs == {"trip_id": "Z1"}
+
+
 def test_run_once_step_failure_aborts_run_but_keeps_prior_steps():
     def failing_step(ctx):
         raise ValueError("boom")

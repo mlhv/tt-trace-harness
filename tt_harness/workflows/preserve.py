@@ -13,8 +13,8 @@ from datetime import date, timedelta
 
 from tt_harness.workflows.base import WorkflowDefinition, WorkflowStep
 
-DEFAULT_USERNAME = "fdse_microservices@163.com"
-DEFAULT_PASSWORD = "DefaultPassword"
+DEFAULT_USERNAME = "fdse_microservice"
+DEFAULT_PASSWORD = "111111"
 SEAT_TYPES = [2, 3]  # SeatClass.FIRSTCLASS, SeatClass.SECONDCLASS
 
 
@@ -83,10 +83,22 @@ def build_steps(gateway, inputs: dict) -> list[WorkflowStep]:
         return {"contacts_id": created["data"]["id"]}
 
     def do_preserve(ctx: dict) -> dict:
-        all_trips = list(ctx.get("travel_trips") or []) + list(ctx.get("travel2_trips") or [])
+        # travelservice (G/D trips) and travel2service (Z/T/K trips) are booked
+        # through different preserve endpoints -- ts-preserve-service only
+        # recognizes travelservice trips, and ts-preserve-other-service only
+        # recognizes travel2service ones. Mixing them into one pool and always
+        # calling preserve() made every travel2-sourced trip fail booking with
+        # "Trip not found", regardless of route/date yield.
+        all_trips = (
+            [(trip, gateway.preserve, gateway.find_notpaid_order, "/api/v1/preserveservice/preserve")
+             for trip in (ctx.get("travel_trips") or [])]
+            + [(trip, gateway.preserve_other, gateway.find_notpaid_order_other,
+                "/api/v1/preserveotherservice/preserveOther")
+               for trip in (ctx.get("travel2_trips") or [])]
+        )
         if not all_trips:
             raise RuntimeError("no trips found for randomized route/date")
-        trip = random.choice(all_trips)
+        trip, book, find_order, endpoint = random.choice(all_trips)
         trip_id = trip["tripId"]["type"] + trip["tripId"]["number"]
         order = {
             "accountId": ctx["account_id"],
@@ -98,13 +110,18 @@ def build_steps(gateway, inputs: dict) -> list[WorkflowStep]:
             "to": inputs["to"],
             "assurance": 0,
         }
-        resp = gateway.preserve(order, ctx["token"])
+        resp = book(order, ctx["token"])
         if resp.get("status") != 1:
             raise RuntimeError(f"preserve failed: {resp.get('msg')}")
-        return {"trip_id": trip_id}
+        # travel2-sourced orders live in a separate table (see
+        # find_notpaid_order_other's docstring) -- thread the matching lookup
+        # through so do_find_order queries the right one. _endpoint (see
+        # runner.py) makes trace correlation match the endpoint actually hit,
+        # since preserve vs. preserveOther is only known at random.choice time.
+        return {"trip_id": trip_id, "find_order": find_order, "_endpoint": endpoint}
 
     def do_find_order(ctx: dict) -> dict:
-        order = gateway.find_notpaid_order(ctx["account_id"], ctx["trip_id"], inputs["date"], ctx["token"])
+        order = ctx["find_order"](ctx["account_id"], ctx["trip_id"], inputs["date"], ctx["token"])
         if order is None:
             raise RuntimeError("could not find the just-created NOTPAID order")
         return {"order_id": order["id"], "price": order.get("price", "0")}

@@ -35,16 +35,47 @@ class TraceCorrelator:
         deadline = self.now_fn() + self.max_wait_seconds
         start_ms = int((step.start - self.pad_seconds) * 1000)
         end_ms = int((step.end + self.pad_seconds) * 1000)
+        best_result = None
 
         while True:
             candidates = self._find_candidates(step, start_ms, end_ms)
             if candidates:
-                best = min(candidates, key=lambda t: abs(t["start"] - (step.start * 1000)))
+                # ts-gateway-service (Zuul/Hystrix) does not propagate trace
+                # context into its downstream call: every request through it
+                # produces TWO disconnected SkyWalking traces sharing the same
+                # endpoint name and near-identical start time -- a near-instant
+                # (~1ms) stub for the gateway's own proxy hop, and a separate
+                # trace, independently rooted by the backend service, holding
+                # the real downstream span tree. The stub's start time is
+                # mechanically closer to our own measured step.start (it truly
+                # is the first thing that happens), so picking "closest start"
+                # always grabbed the empty stub. Duration reliably tells them
+                # apart -- the stub reports near-zero, the real trace reports
+                # actual processing time -- so prefer it, falling back to
+                # closest-start only to disambiguate otherwise-equal candidates
+                # (e.g. unrelated background traffic to the same endpoint).
+                best = min(
+                    candidates,
+                    key=lambda t: (-int(t.get("duration", 0)), abs(int(t["start"]) - (step.start * 1000))),
+                )
                 trace_id = best["traceIds"][0]
                 spans = self.sw_client.query_trace(trace_id)
-                return CorrelationResult("matched", trace_id, spans)
+                best_result = CorrelationResult("matched", trace_id, spans)
+                # The richer trace can take longer than the gateway stub to be
+                # ingested and indexed by OAP -- querying right after the step
+                # completes sometimes only finds the stub, not because it's
+                # the real answer, but because the real one hasn't landed yet.
+                # A lone span whose serviceCode is the gateway is that stub's
+                # specific tell (not "any single-span trace" -- a step whose
+                # real trace is legitimately single-hop must still return
+                # immediately), so keep polling only in that exact case.
+                is_lone_gateway_stub = (
+                    len(spans) == 1 and spans[0].get("serviceCode") == "ts-gateway-service"
+                )
+                if not is_lone_gateway_stub:
+                    return best_result
             if self.now_fn() >= deadline:
-                return CorrelationResult("failed", None, [])
+                return best_result if best_result is not None else CorrelationResult("failed", None, [])
             self.sleep_fn(self.retry_interval_seconds)
 
     def _find_candidates(self, step, start_ms: int, end_ms: int) -> list[dict]:
@@ -63,5 +94,5 @@ class TraceCorrelator:
         return [
             t for t in traces
             if any(step.endpoint in name for name in t.get("endpointNames", []))
-            and start_ms <= t["start"] <= end_ms
+            and start_ms <= int(t["start"]) <= end_ms
         ]

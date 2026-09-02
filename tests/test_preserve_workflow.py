@@ -33,8 +33,16 @@ class FakeGateway:
         self.calls.append(("preserve", order, token))
         return {"status": 1, "msg": "Success.", "data": "Success."}
 
+    def preserve_other(self, order, token):
+        self.calls.append(("preserve_other", order, token))
+        return {"status": 1, "msg": "Success.", "data": "Success."}
+
     def find_notpaid_order(self, account_id, trip_id, travel_date, token):
         self.calls.append(("find_notpaid_order", account_id, trip_id, travel_date, token))
+        return {"id": "order1", "price": "100.0"}
+
+    def find_notpaid_order_other(self, account_id, trip_id, travel_date, token):
+        self.calls.append(("find_notpaid_order_other", account_id, trip_id, travel_date, token))
         return {"id": "order1", "price": "100.0"}
 
     def pay(self, order_id, trip_id, user_id, price, token):
@@ -49,13 +57,13 @@ def test_randomize_inputs_picks_route_and_valid_seat_type():
     assert inputs["from"] == "Su Zhou"
     assert inputs["to"] == "Shang Hai"
     assert inputs["seatType"] in (2, 3)
-    assert inputs["username"] == "fdse_microservices@163.com"
+    assert inputs["username"] == "fdse_microservice"
 
 
 def test_build_steps_has_expected_names_and_correlate_flags():
     gw = FakeGateway()
     inputs = {"from": "Su Zhou", "to": "Shang Hai", "date": "2026-09-10", "seatType": 2,
-              "username": "fdse_microservices@163.com", "password": "DefaultPassword"}
+              "username": "fdse_microservice", "password": "111111"}
     steps = build_steps(gw, inputs)
     names = [s.name for s in steps]
     assert names == ["login", "search_travel", "search_travel2", "ensure_contact", "preserve", "find_order", "pay"]
@@ -72,7 +80,7 @@ def test_build_steps_has_expected_names_and_correlate_flags():
 def test_full_step_sequence_threads_context_end_to_end():
     gw = FakeGateway()
     inputs = {"from": "Su Zhou", "to": "Shang Hai", "date": "2026-09-10", "seatType": 2,
-              "username": "fdse_microservices@163.com", "password": "DefaultPassword"}
+              "username": "fdse_microservice", "password": "111111"}
     steps = build_steps(gw, inputs)
 
     context = {}
@@ -93,11 +101,37 @@ def test_full_step_sequence_threads_context_end_to_end():
     ]
 
 
+def test_preserve_step_books_travel2_trips_through_preserve_other():
+    """travelservice and travel2service trips are booked through different
+    endpoints -- ts-preserve-service only recognizes travelservice trips, so a
+    travel2-sourced trip must go through preserve_other, not preserve."""
+    gw = FakeGateway()
+    gw.search_left = lambda start, end, date, token, service: (
+        [] if service == "travel" else [{"tripId": {"type": "Z", "number": "99"}}]
+    )
+    inputs = {"from": "Su Zhou", "to": "Shang Hai", "date": "2026-09-10", "seatType": 2,
+              "username": "fdse_microservice", "password": "111111"}
+    steps = build_steps(gw, inputs)
+
+    context = {}
+    for step in steps:
+        context.update(step.run(context))
+
+    assert context["trip_id"] == "Z99"
+    called_names = [c[0] for c in gw.calls]
+    assert "preserve_other" in called_names
+    assert "preserve" not in called_names
+    # travel2-sourced orders live in a separate table -- find_order must use
+    # the matching lookup, not the travelservice one.
+    assert "find_notpaid_order_other" in called_names
+    assert "find_notpaid_order" not in called_names
+
+
 def test_preserve_step_raises_when_no_trips_found():
     gw = FakeGateway()
     gw.search_left = lambda *a, **k: []
     inputs = {"from": "Su Zhou", "to": "Shang Hai", "date": "2026-09-10", "seatType": 2,
-              "username": "fdse_microservices@163.com", "password": "DefaultPassword"}
+              "username": "fdse_microservice", "password": "111111"}
     steps = build_steps(gw, inputs)
     context = {}
     for step in steps:
