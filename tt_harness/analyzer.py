@@ -46,17 +46,45 @@ class DependencyAnalyzer:
 
         return service_edges, endpoint_edges
 
+    @staticmethod
+    def _span_key(span: dict) -> tuple[str, int]:
+        """SkyWalking span identity. spanId is only unique WITHIN a segment."""
+        return (span["segmentId"], span["spanId"])
+
+    @staticmethod
+    def _parent_key(span: dict) -> tuple[str, int] | None:
+        """Resolve a span's parent key across SkyWalking's segment model.
+
+        spanId/parentSpanId are segment-local: every segment (one per
+        process/service hop) restarts at spanId=0 with parentSpanId=-1.
+        Cross-segment (i.e. cross-service) linkage lives ONLY in `refs`.
+
+        - parentSpanId != -1  -> parent is (same segment, parentSpanId)
+        - parentSpanId == -1 and refs -> parent is
+          (refs[0].parentSegmentId, refs[0].parentSpanId), a DIFFERENT segment
+        - parentSpanId == -1 and no refs -> the trace's true root, no parent
+        """
+        if span["parentSpanId"] != -1:
+            return (span["segmentId"], span["parentSpanId"])
+        refs = span.get("refs") or []
+        if refs:
+            return (refs[0]["parentSegmentId"], refs[0]["parentSpanId"])
+        return None
+
     def _process_span_tree(self, spans: list[dict], service_edges: dict, endpoint_edges: dict) -> None:
-        by_id = {s["spanId"]: s for s in spans}
-        children_by_parent: dict[int, list[dict]] = {}
+        by_key = {self._span_key(s): s for s in spans}
+        children_by_parent: dict[tuple[str, int], list[dict]] = {}
         for s in spans:
-            children_by_parent.setdefault(s["parentSpanId"], []).append(s)
+            pk = self._parent_key(s)
+            if pk is not None:
+                children_by_parent.setdefault(pk, []).append(s)
 
         for span in spans:
-            parent = by_id.get(span["parentSpanId"])
+            parent_key = self._parent_key(span)
+            parent = by_key.get(parent_key) if parent_key is not None else None
             if parent is None:
-                continue  # root span, no incoming edge to record
-            self_time = self._self_time_ms(span, children_by_parent.get(span["spanId"], []))
+                continue  # trace root (or a ref to a segment not in this trace)
+            self_time = self._self_time_ms(span, children_by_parent.get(self._span_key(span), []))
             is_error = bool(span.get("isError"))
 
             if parent["serviceCode"] != span["serviceCode"]:

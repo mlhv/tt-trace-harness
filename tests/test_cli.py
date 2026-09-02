@@ -39,8 +39,9 @@ def test_run_command_writes_all_four_output_files(tmp_path):
 
     step = StepResult("login", "/api/v1/users/login", 0.0, 0.1, True, None, {}, True,
                        correlation_status="matched", trace_id="t1",
-                       spans=[{"spanId": 0, "parentSpanId": -1, "serviceCode": "ts-gateway-service",
-                               "endpointName": "/e", "startTime": 0, "endTime": 100, "isError": False}])
+                       spans=[{"segmentId": "seg-1", "spanId": 0, "parentSpanId": -1,
+                               "serviceCode": "ts-gateway-service", "endpointName": "/e",
+                               "startTime": 0, "endTime": 100, "isError": False, "refs": []}])
     results = [
         RunResult("r1", "preserve", {}, True, [step], None),
         RunResult("r2", "preserve", {}, False, [], "login failed"),
