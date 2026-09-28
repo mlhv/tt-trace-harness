@@ -87,18 +87,39 @@ All in `ts-preserve-service/src/main/java/preserve/service/PreserveServiceImpl.j
 | `dipatchSeat()` call (L150-166, L266-286) | `ticket.getSeatNo()` | `seat.allocatedClass`, `seat.allocatedNumber` | Concrete allocation outcome — worth watching given the contention already observed in `search_travel`'s seat-service loop |
 | `createOrder()` call (L170-175, L391-404) | `cor.getData().getId()`, `order.getPrice()`, `cor.getStatus()` | `order.id`, `order.price`, `order.status` | The workflow's actual business outcome; `order.id` also lets analysis cross-reference the harness's own `find_order` step and the real DB row the harness's README already flags as a side effect |
 
-## Open implementation questions (resolve during implementation, not blocking design approval)
+## Open implementation questions — resolved 2026-09-28
 
-- Whether `ActiveSpan.tag()` called immediately after `restTemplate.exchange()`
-  returns lands on that call's own Exit span, or — if SkyWalking's
-  RestTemplate plugin has already closed it — falls back to the parent Entry
-  span. Either is acceptable (all tags stay within the same trace/segment,
-  which is the unit `tt_harness` correlates on), but the implementation
-  should confirm which and note it, rather than assume.
-- Confirm `apm-toolkit-trace:8.6.0` is compatible with whatever SkyWalking
-  Java agent version is actually running in the cluster (match, don't
-  assume, since it's inferred from a sibling service's pom rather than
-  checked against the deployed agent).
+- **Which span the tags land on:** confirmed empirically against a real
+  cluster trace (`tt_harness`'s `client_sw.py` querying the live OAP after
+  deploying the built image). All business tags land on the **entry span**
+  — `ts-preserve-service`'s `POST:/api/v1/preserveservice/preserve` span —
+  not on the individual downstream RestTemplate Exit spans. Each Exit span
+  (to `ts-security-service`, `ts-contacts-service`, `ts-travel-service`,
+  `ts-basic-service`, `ts-seat-service`, `ts-order-service`,
+  `ts-user-service`) carries only the generic `url`/`http.method`/
+  `http.status_code` tags SkyWalking's RestTemplate plugin adds — meaning
+  the plugin closes each Exit span before `preserve()`'s own next line of
+  code runs, so `ActiveSpan.tag()` always resolves to the still-open parent
+  Entry span at every one of this plan's insertion points. Example (real
+  values from a passing smoke-test run, `seatType=3`):
+  ```
+  POST:/api/v1/preserveservice/preserve tags:
+    workflow=preserve, tripId=G1236, seatTypeRequested=3,
+    security.status=pass, seat.confortAvailable=1073741823,
+    seat.economyAvailable=1073741823, seat.checkResult=pass,
+    price.confortClass=50.0, price.economyClass=35.0,
+    seat.allocatedClass=SecondClassSeat, seat.allocatedNumber=1444993438,
+    order.status=success, order.id=<uuid>, order.price=35.0
+  ```
+  This is the more useful outcome anyway: all 14 tags are queryable off one
+  span per workflow run, rather than split across seven.
+- **SkyWalking agent version compatibility:** confirmed. The cluster's Java
+  agent is **8.13.0** (seen loading `apm-toolkit-trace-activation-8.13.0.jar`
+  in the pod's startup logs), while the app was compiled against
+  `apm-toolkit-trace:8.6.0` — the toolkit API is stable and
+  forward-compatible across that gap by design (SkyWalking publishes the
+  toolkit separately from the agent for exactly this reason). Tags landed
+  correctly with zero compatibility issues; no version bump needed.
 
 ## Alternatives considered
 
