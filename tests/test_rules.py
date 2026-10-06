@@ -157,3 +157,15 @@ def test_build_traces_skips_trace_whose_tree_cannot_be_built(monkeypatch):
     traces, skipped = build_traces([good, bad])
     assert [t.trace_id for t in traces] == ["good"]
     assert skipped == len(bad["spans"])
+
+
+def test_single_span_traces_do_not_dilute_prevalence():
+    stubs = [
+        {"traceId": f"s{i}", "spans": [span("G", 0, -1, "ts-gateway-service", TRIPS_LEFT, 0, 1)]}
+        for i in range(4)
+    ]
+    raw = [trips_left_trace(f"h{i}", 4) for i in range(2)] + [trips_left_trace(f"m{i}", 1) for i in range(2)] + stubs
+    [finding] = _nplus1(run_rules(raw))
+    assert finding.root == ROOT
+    assert finding.prevalence == 0.5
+    assert finding.trace_count == 4

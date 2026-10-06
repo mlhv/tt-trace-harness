@@ -19,6 +19,10 @@ def n_plus_one_remote(traces: list[Trace], params: dict[str, Any]) -> list[Findi
     min_prevalence = float(params.get("min_prevalence", 0.5))
     findings: list[Finding] = []
     for root, group in group_by_root(traces).items():
+        # Single-span traces (e.g. gateway stubs) cannot contain exits; exclude them from prevalence.
+        group = [trace for trace in group if len(trace.tree.spans) > 1]
+        if not group:
+            continue
         hits: dict[CallKey, list[tuple[str, int, float, list[str]]]] = {}
         for trace in group:
             for key, exits_by_segment in _exits_by_call_per_segment(trace.tree).items():
