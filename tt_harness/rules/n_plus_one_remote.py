@@ -5,12 +5,11 @@ from __future__ import annotations
 import statistics
 from typing import Any
 
-from tt_harness.findings import Finding, interval_union_ms, normalize_endpoint, pick_evidence
-from tt_harness.rules.base import Trace, group_by_root
+from tt_harness.findings import Finding, normalize_endpoint, pick_evidence
+from tt_harness.rules.base import Trace, is_remote_exit, multi_span_groups, remote_callee, share_of_trace
 from tt_harness.spantree import SpanTree, span_ref
 
 RULE = "n_plus_one_remote"
-REMOTE_LAYERS = {"Http", "RPCFramework"}
 CallKey = tuple[str, str, str, str]
 
 
@@ -18,11 +17,7 @@ def n_plus_one_remote(traces: list[Trace], params: dict[str, Any]) -> list[Findi
     min_repeats = int(params.get("min_repeats", 3))
     min_prevalence = float(params.get("min_prevalence", 0.5))
     findings: list[Finding] = []
-    for root, group in group_by_root(traces).items():
-        # Single-span traces (e.g. gateway stubs) cannot contain exits; exclude them from prevalence.
-        group = [trace for trace in group if len(trace.tree.spans) > 1]
-        if not group:
-            continue
+    for root, group in multi_span_groups(traces).items():
         hits: dict[CallKey, list[tuple[str, int, float, list[str]]]] = {}
         for trace in group:
             for key, exits_by_segment in _exits_by_call_per_segment(trace.tree).items():
@@ -41,7 +36,7 @@ def n_plus_one_remote(traces: list[Trace], params: dict[str, Any]) -> list[Findi
 
                 refs = [span_ref(span) for span in best_exits]
                 refs += [span_ref(child) for span in best_exits for child in trace.tree.children(span)]
-                hits.setdefault(key, []).append((trace.trace_id, best_k, _share(trace, best_exits), refs))
+                hits.setdefault(key, []).append((trace.trace_id, best_k, share_of_trace(trace, best_exits), refs))
         for (caller_service, caller_entry, callee_service, callee_endpoint), rows in hits.items():
             prevalence = len(rows) / len(group)
             if prevalence < min_prevalence:
@@ -72,32 +67,12 @@ def _exits_by_call_per_segment(tree: SpanTree) -> dict[CallKey, dict[str, list[d
     """Group exits by (4-part key, caller segment id)."""
     buckets: dict[CallKey, dict[str, list[dict]]] = {}
     for span in tree.spans:
-        if span.get("type") != "Exit" or span.get("layer") not in REMOTE_LAYERS:
+        if not is_remote_exit(span):
             continue
         caller = tree.caller_segment_entry(span)
-        callee_service, callee_endpoint = _callee(tree, span)
+        callee_service, callee_endpoint = remote_callee(tree, span)
         key = (str(caller.get("serviceCode") or ""), normalize_endpoint(caller.get("endpointName")), callee_service, callee_endpoint)
         segment_id = str(caller.get("segmentId") or "")
         buckets.setdefault(key, {}).setdefault(segment_id, []).append(span)
     return buckets
 
-
-def _callee(tree: SpanTree, exit_span: dict) -> tuple[str, str]:
-    endpoint = normalize_endpoint(exit_span.get("endpointName"))
-    for child in tree.children(exit_span):
-        if child.get("serviceCode"):
-            return str(child["serviceCode"]), endpoint
-    peer = str(exit_span.get("peer") or "")
-    return peer.split(":", 1)[0] or "unknown", endpoint
-
-
-def _share(trace: Trace, exits: list[dict]) -> float:
-    denominator = trace.duration_ms
-    if trace.root is not None:
-        # An async gateway root can end before its children; use the whole trace extent.
-        extent = max(float(span["endTime"]) for span in trace.tree.spans) - float(trace.root["startTime"])
-        denominator = max(denominator, extent)
-    if denominator <= 0:
-        return 0.0
-    union = interval_union_ms([(float(span["startTime"]), float(span["endTime"])) for span in exits])
-    return min(union / denominator, 1.0)

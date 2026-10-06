@@ -71,6 +71,22 @@ def pick_evidence(shares: list[tuple[str, float]]) -> list[str]:
     return list(dict.fromkeys(picks))
 
 
+# Each rule's headline measure: (label, Finding field). Rules without a latency share report their own.
+RULE_MEASURES: dict[str, tuple[str, str]] = {
+    "n_plus_one_remote": ("latency share", "share_median"),
+    "n_plus_one_sql": ("latency share", "share_median"),
+    "sequential_fanout": ("latency share", "share_median"),
+    "hotspot_span": ("self-time share", "share_median"),
+    "broken_propagation": ("stub fraction", "prevalence"),
+    "cyclic_calls": ("cycle hops", "k_median"),
+    "deep_chain": ("hops", "k_median"),
+}
+
+
+def rule_measure(rule: str) -> tuple[str, str]:
+    return RULE_MEASURES.get(rule, ("latency share", "share_median"))
+
+
 def load_slope(points: list[tuple[float | None, float | None]]) -> float | None:
     usable = [(float(x), float(y)) for x, y in points if x is not None and y is not None]
     if len({x for x, _ in usable}) < 2:

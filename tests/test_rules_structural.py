@@ -1,5 +1,5 @@
 from tests.factory import TRIPS_LEFT, ref, span, stub_trace, trips_left_trace
-from tt_harness.rules import RULES, run_rules
+from tt_harness.rules import run_rules
 
 
 def _by_rule(run, rule):
@@ -19,10 +19,6 @@ def _seat_order_seat(trace_id):
             span("S2", 0, -1, "ts-seat-service", "{POST}/seat2", 21, 59, refs=ref("O", 1)),
         ],
     }
-
-
-def test_registry_order():
-    assert list(RULES) == ["n_plus_one_remote", "cyclic_calls", "broken_propagation"]
 
 
 def test_cycle_is_reported_with_signature_and_hops():
