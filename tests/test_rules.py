@@ -64,6 +64,52 @@ def test_cross_thread_exits_attribute_to_parent_segment():
     assert finding.callee_service == "ts-seat-service"
 
 
+def test_repeats_split_across_caller_segments_are_not_pooled():
+    """Root issues 3 exits to ts-seat-service, each in its own segment.
+    Each seat segment then issues 1 exit to ts-order-service.
+    Should find exactly 1 n_plus_one_remote: root -> ts-seat-service (3 repeats).
+    Should NOT pool the 3 segment exits as a second finding.
+    """
+    SEAT_PATH_NORMALIZED = "{POST}" + SEAT_PATH
+    ORDER_PATH = "/api/v1/orderservice/x"
+    spans = [
+        # Root segment: ts-travel-service, issues 3 exits to ts-seat-service
+        span("T", 0, -1, "ts-travel-service", TRIPS_LEFT, 0, 100),
+        # 3 exits from root to ts-seat-service, each landing in different segment
+        span("T", 1, 0, "ts-travel-service", SEAT_PATH, 10, 20, kind="Exit", peer="ts-seat-service:18898"),
+        span("T", 2, 0, "ts-travel-service", SEAT_PATH, 30, 40, kind="Exit", peer="ts-seat-service:18898"),
+        span("T", 3, 0, "ts-travel-service", SEAT_PATH, 50, 60, kind="Exit", peer="ts-seat-service:18898"),
+    ]
+    # Seat service entry segments (3 of them)
+    for i in range(3):
+        seg_id = f"S{i}"
+        exit_start = 10 + i * 20
+        exit_end = exit_start + 10
+        # Entry span for this seat segment
+        spans.append(span(seg_id, 0, -1, "ts-seat-service", SEAT_PATH_NORMALIZED, exit_start + 1, exit_end - 1, refs=ref("T", i + 1)))
+        # Exit span from this seat segment to ts-order-service (only 1, not multiple)
+        spans.append(span(seg_id, 1, 0, "ts-seat-service", ORDER_PATH, exit_start + 2, exit_end - 2, kind="Exit", peer="ts-order-service:9000"))
+    # Order service entry segments (3 of them, one for each order call)
+    for i in range(3):
+        seg_id = f"O{i}"
+        exit_start = 10 + i * 20
+        exit_end = exit_start + 10
+        spans.append(span(seg_id, 0, -1, "ts-order-service", ORDER_PATH, exit_start + 3, exit_end - 3, refs=ref(f"S{i}", 1)))
+
+    run = run_rules([{"traceId": "split", "spans": spans}])
+    findings = _nplus1(run)
+
+    # Should find exactly 1 finding: root -> ts-seat-service (3 repeats)
+    assert len(findings) == 1
+    [finding] = findings
+    assert finding.root == ROOT
+    assert finding.caller_service == "ts-travel-service"
+    assert finding.caller_segment_entry == ROOT
+    assert finding.callee_service == "ts-seat-service"
+    assert finding.callee_endpoint == SEAT_PATH
+    assert finding.k_median == 3.0  # 3 exits from root
+
+
 def test_rule_error_is_isolated(monkeypatch):
     def boom(traces, params):
         raise RuntimeError("kaput")
