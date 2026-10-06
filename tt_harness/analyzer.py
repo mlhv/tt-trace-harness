@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from tt_harness.spantree import SpanTree
+
 
 @dataclass
 class EdgeStats:
@@ -46,55 +48,18 @@ class DependencyAnalyzer:
 
         return service_edges, endpoint_edges
 
-    @staticmethod
-    def _span_key(span: dict) -> tuple[str, int]:
-        """SkyWalking span identity. spanId is only unique WITHIN a segment."""
-        return (span["segmentId"], span["spanId"])
-
-    @staticmethod
-    def _parent_key(span: dict) -> tuple[str, int] | None:
-        """Resolve a span's parent key across SkyWalking's segment model.
-
-        spanId/parentSpanId are segment-local: every segment (one per
-        process/service hop) restarts at spanId=0 with parentSpanId=-1.
-        Cross-segment (i.e. cross-service) linkage lives ONLY in `refs`.
-
-        - parentSpanId != -1  -> parent is (same segment, parentSpanId)
-        - parentSpanId == -1 and refs -> parent is
-          (refs[0].parentSegmentId, refs[0].parentSpanId), a DIFFERENT segment
-        - parentSpanId == -1 and no refs -> the trace's true root, no parent
-        """
-        if span["parentSpanId"] != -1:
-            return (span["segmentId"], span["parentSpanId"])
-        refs = span.get("refs") or []
-        if refs:
-            return (refs[0]["parentSegmentId"], refs[0]["parentSpanId"])
-        return None
-
     def _process_span_tree(self, spans: list[dict], service_edges: dict, endpoint_edges: dict) -> None:
-        by_key = {self._span_key(s): s for s in spans}
-        children_by_parent: dict[tuple[str, int], list[dict]] = {}
-        for s in spans:
-            pk = self._parent_key(s)
-            if pk is not None:
-                children_by_parent.setdefault(pk, []).append(s)
-
+        tree = SpanTree(spans)  # see tt_harness.spantree for SkyWalking's segment model
         for span in spans:
-            parent_key = self._parent_key(span)
-            parent = by_key.get(parent_key) if parent_key is not None else None
+            parent = tree.parent(span)
             if parent is None:
                 continue  # trace root (or a ref to a segment not in this trace)
-            self_time = self._self_time_ms(span, children_by_parent.get(self._span_key(span), []))
+            self_time = tree.self_time_ms(span)
             is_error = bool(span.get("isError"))
 
             if parent["serviceCode"] != span["serviceCode"]:
                 self._record(service_edges, parent["serviceCode"], span["serviceCode"], self_time, is_error)
             self._record(endpoint_edges, parent["endpointName"], span["endpointName"], self_time, is_error)
-
-    def _self_time_ms(self, span: dict, direct_children: list[dict]) -> float:
-        own = span["endTime"] - span["startTime"]
-        children_total = sum(c["endTime"] - c["startTime"] for c in direct_children)
-        return float(max(own - children_total, 0))
 
     def _record(self, edges: dict, source: str, target: str, duration_ms: float, is_error: bool) -> None:
         key = (source, target)
