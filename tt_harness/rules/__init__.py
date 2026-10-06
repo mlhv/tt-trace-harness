@@ -7,12 +7,16 @@ from typing import Any, Callable
 
 from tt_harness.findings import Finding
 from tt_harness.rules.base import Trace, build_traces
+from tt_harness.rules.broken_propagation import broken_propagation
+from tt_harness.rules.cyclic_calls import cyclic_calls
 from tt_harness.rules.n_plus_one_remote import n_plus_one_remote
 
 RuleFn = Callable[[list[Trace], dict[str, Any]], list[Finding]]
 
 RULES: dict[str, RuleFn] = {
     "n_plus_one_remote": n_plus_one_remote,
+    "cyclic_calls": cyclic_calls,
+    "broken_propagation": broken_propagation,
 }
 
 
