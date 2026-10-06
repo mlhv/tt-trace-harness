@@ -59,3 +59,11 @@ def test_comparison_page_lists_levels_slope_and_chart():
     assert "0.0200" in html
     assert "<svg id='chart'></svg>" in html
     assert "No findings" in render_comparison("t", [], "")
+
+
+def test_comparison_shows_detail_to_distinguish_rows():
+    base = {"rule": "cycle", "root": "r", "caller": "a", "callee": "b", "runs": 1, "shares": {"5": 0.1}, "load_slope": None}
+    rows = [{**base, "id": "1", "detail": "a>b>a via /x"}, {**base, "id": "2", "detail": "a>b>c>a via /y"}]
+    html = render_comparison("t", rows, "")
+    assert "<div class='sub'>a&gt;b&gt;a via /x</div>" in html
+    assert "a&gt;b&gt;c&gt;a via /y" in html

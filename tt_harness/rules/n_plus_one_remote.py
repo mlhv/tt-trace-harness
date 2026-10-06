@@ -88,7 +88,12 @@ def _callee(tree: SpanTree, exit_span: dict) -> tuple[str, str]:
 
 
 def _share(trace: Trace, exits: list[dict]) -> float:
-    if trace.duration_ms <= 0:
+    denominator = trace.duration_ms
+    if trace.root is not None:
+        # An async gateway root can end before its children; use the whole trace extent.
+        extent = max(float(span["endTime"]) for span in trace.tree.spans) - float(trace.root["startTime"])
+        denominator = max(denominator, extent)
+    if denominator <= 0:
         return 0.0
     union = interval_union_ms([(float(span["startTime"]), float(span["endTime"])) for span in exits])
-    return min(union / trace.duration_ms, 1.0)
+    return min(union / denominator, 1.0)

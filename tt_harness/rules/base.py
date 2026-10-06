@@ -28,17 +28,20 @@ def build_traces(raw_traces: list[dict]) -> tuple[list[Trace], int]:
         skipped += len(spans) - len(valid)
         if not valid:
             continue
-        tree = SpanTree(valid)
-        root = tree.trace_root()
-        traces.append(
-            Trace(
+        try:
+            tree = SpanTree(valid)
+            root = tree.trace_root()
+            trace = Trace(
                 trace_id=str(item.get("traceId")),
                 tree=tree,
                 root=root,
                 root_endpoint=normalize_endpoint(root.get("endpointName")) if root else "",
                 duration_ms=duration_ms(root) if root else 0.0,
             )
-        )
+        except Exception:
+            skipped += len(valid)
+            continue
+        traces.append(trace)
     return traces, skipped
 
 

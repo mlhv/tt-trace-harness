@@ -73,11 +73,12 @@ def render_comparison(title: str, rows: list[dict[str, Any]], chart_svg: str = "
     head = "".join(f"<th class='num'>{escape(level)} users</th>" for level in levels)
     body = []
     for row in rows:
-        target = escape(row["callee"] or row["detail"] or "")
+        target = escape(row["callee"] or "")
+        detail = f"<div class='sub'>{escape(row['detail'])}</div>" if row.get("detail") else ""
         shares = "".join(f"<td class='num'>{_fmt(row['shares'].get(level))}</td>" for level in levels)
         body.append(
             f"<tr><td><span class='badge'>{escape(row['rule'])}</span></td><td>{escape(row['root'])}</td>"
-            f"<td>{escape(row['caller'])} → {target}</td>{shares}"
+            f"<td>{escape(row['caller'])} → {target}{detail}</td>{shares}"
             f"<td class='num'>{_fmt(row['load_slope'], 4)}</td><td class='num'>{row['runs']}</td></tr>"
         )
     parts.append(

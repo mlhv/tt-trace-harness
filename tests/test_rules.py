@@ -130,3 +130,30 @@ def test_disabled_and_unknown_rules():
 def test_no_traces_gives_no_findings():
     run = run_rules([])
     assert (run.traces, run.findings, run.errors, run.skipped_spans) == ([], [], {}, 0)
+
+
+def test_share_denominator_covers_async_root_shorter_than_children():
+    raw = [trips_left_trace(f"t{i}", 4, root_ms=1) for i in range(3)]
+    [finding] = _nplus1(run_rules(raw))
+    # exits cover 4 x 8 ms; trace spans 0..43 ms (last exit ends at 43)
+    assert finding.share_median < 1.0
+    assert finding.share_median == pytest.approx(32 / 43)
+
+
+def test_build_traces_skips_trace_whose_tree_cannot_be_built(monkeypatch):
+    from tt_harness.rules import base
+
+    real = base.SpanTree
+
+    def flaky(spans):
+        if any(s["traceId"] == "bad" for s in spans):
+            raise ValueError("boom")
+        return real(spans)
+
+    good, bad = trips_left_trace("good", 1), trips_left_trace("bad", 1)
+    for s in bad["spans"]:
+        s["traceId"] = "bad"
+    monkeypatch.setattr(base, "SpanTree", flaky)
+    traces, skipped = build_traces([good, bad])
+    assert [t.trace_id for t in traces] == ["good"]
+    assert skipped == len(bad["spans"])
