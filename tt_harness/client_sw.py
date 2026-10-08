@@ -48,9 +48,9 @@ class SkyWalkingClient:
         self.timeout = timeout
 
     def query_basic_traces(self, start: str, end: str, trace_state: str = "ALL",
-                            page_num: int = 1, page_size: int = 20) -> list[dict]:
+                            page_num: int = 1, page_size: int = 20, step: str = "MINUTE") -> list[dict]:
         condition = {
-            "queryDuration": {"start": start, "end": end, "step": "MINUTE"},
+            "queryDuration": {"start": start, "end": end, "step": step},
             "traceState": trace_state,
             "queryOrder": "BY_START_TIME",
             "paging": {"pageNum": page_num, "pageSize": page_size},
