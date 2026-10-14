@@ -137,3 +137,24 @@ def test_the_innermost_enclosing_exit_wins():
     inner = _call("BA", 1, 0, 18, 52, "ts-station-service:12345", "ts-basic-service")
     tree = SpanTree([T0, T1, TI0, outer, BA0, inner, ST0])
     assert tree.parent(ST0) is inner
+
+
+# The forwarded header can also name an exit whose peer IS the entry's service, but which is not its
+# caller: in SEALAB `/preserve`, travel → seat → travel names preserve's exit to travel for both travel
+# entries. A nested exit to the same service, running when the entry starts, is the real caller.
+PRESERVE = "ts-preserve-service|tt-sealab|"
+SEAT = "ts-seat-service|tt-sealab|"
+P0 = _span("P", 0, -1, 0, 100, service=PRESERVE)
+P1 = _call("P", 1, 0, 10, 90, "ts-travel-service:12346", PRESERVE)
+TR0 = _entry("TR", 12, 88, _ref("P", 1), TRAVEL)
+TR1 = _call("TR", 1, 0, 20, 60, "ts-seat-service:18898", TRAVEL)
+SE0 = _entry("SE", 22, 58, _ref("P", 1), SEAT)
+SE1 = _call("SE", 1, 0, 25, 35, "ts-travel-service:12346", SEAT)
+TR2 = _entry("TR2", 27, 33, _ref("P", 1), TRAVEL)
+
+
+def test_a_forwarded_ref_to_an_exit_to_the_same_service_yields_to_a_nested_caller():
+    tree = SpanTree([P0, P1, TR0, TR1, SE0, SE1, TR2])
+    assert tree.parent(TR0) is P1
+    assert tree.parent(SE0) is TR1
+    assert tree.parent(TR2) is SE1

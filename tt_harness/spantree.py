@@ -18,7 +18,11 @@ parent (SEALAB train-ticket forwards the incoming HttpHeaders). SpanTree
 re-attaches such an entry to the exit that called its service: when the ref'd
 exit's peer host is not the entry's service, the innermost exit whose peer host
 is that service and whose time window holds the entry's start becomes the
-parent. Without such an exit the ref is kept.
+parent. When the ref'd exit's peer host IS the entry's service, a nested exit to
+that service from another segment (inside the ref'd exit's window and running
+when the entry starts) is the real caller: travel -> seat -> travel under a
+forwarded header names the first exit to travel for both travel entries.
+Without such an exit the ref is kept.
 """
 
 from __future__ import annotations
@@ -65,6 +69,10 @@ class SpanTree:
     def __init__(self, spans: list[dict]) -> None:
         self.spans = list(spans)
         self._by_key = {span_key(span): span for span in self.spans}
+        self._exits_by_peer: dict[str, list[dict]] = {}
+        for span in self.spans:
+            if span.get("type") == "Exit":
+                self._exits_by_peer.setdefault(peer_host(span), []).append(span)
         self._parent_keys = {span_key(span): self._resolve_parent_key(span) for span in self.spans}
         self._children: dict[SpanKey, list[dict]] = {}
         self._segment_first: dict[str, dict] = {}
@@ -82,17 +90,22 @@ class SpanTree:
             return key
         referenced = self._by_key.get(key)
         service = service_name(span)
-        if referenced is None or referenced.get("type") != "Exit" or not service or peer_host(referenced) == service:
+        if referenced is None or referenced.get("type") != "Exit" or not service:
             return key
         start = span["startTime"]
         callers = [
             candidate
-            for candidate in self.spans
-            if candidate.get("type") == "Exit"
-            and candidate is not referenced
-            and peer_host(candidate) == service
-            and candidate["startTime"] <= start <= candidate["endTime"]
+            for candidate in self._exits_by_peer.get(service, [])
+            if candidate is not referenced and candidate["startTime"] <= start <= candidate["endTime"]
         ]
+        if peer_host(referenced) == service:
+            callers = [
+                candidate
+                for candidate in callers
+                if candidate["segmentId"] != referenced["segmentId"]
+                and referenced["startTime"] <= candidate["startTime"]
+                and candidate["endTime"] <= referenced["endTime"]
+            ]
         if not callers:
             return key
         return span_key(max(callers, key=lambda candidate: (candidate["startTime"], -candidate["endTime"])))
