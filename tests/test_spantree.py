@@ -81,3 +81,59 @@ def test_caller_segment_entry_climbs_cross_thread_segments():
     assert tree.caller_segment_entry(w1) is A0
     plain = SpanTree([A0, A1, B0, B1])
     assert plain.caller_segment_entry(B1) is B0
+
+
+# A service that forwards its incoming propagation header on its own outgoing calls makes every
+# downstream entry name the first exit as parent (seen in SEALAB train-ticket). The exit's peer and
+# the time window identify the real caller.
+def _call(seg, span_id, parent_span_id, start, end, peer, service):
+    span = _span(seg, span_id, parent_span_id, start, end, service=service)
+    span.update(type="Exit", peer=peer)
+    return span
+
+
+def _entry(seg, start, end, refs, service):
+    span = _span(seg, 0, -1, start, end, refs=refs, service=service)
+    span["type"] = "Entry"
+    return span
+
+
+TRAVEL = "ts-travel-service|tt-sealab|"
+T0 = _span("T", 0, -1, 0, 100, service=TRAVEL)
+T1 = _call("T", 1, 0, 10, 60, "ts-ticketinfo-service:15681", TRAVEL)
+TI0 = _entry("TI", 12, 58, _ref("T", 1), "ts-ticketinfo-service|tt-sealab|")
+TI1 = _call("TI", 1, 0, 14, 56, "ts-basic-service:15680", "ts-ticketinfo-service|tt-sealab|")
+BA0 = _entry("BA", 16, 54, _ref("T", 1), "ts-basic-service|tt-sealab|")
+BA1 = _call("BA", 1, 0, 18, 52, "ts-station-service:12345", "ts-basic-service|tt-sealab|")
+ST0 = _entry("ST", 20, 50, _ref("T", 1), "ts-station-service|tt-sealab|")
+FORWARDED = [T0, T1, TI0, TI1, BA0, BA1, ST0]
+
+
+def test_forwarded_header_entries_are_reattached_to_the_exit_that_called_their_service():
+    tree = SpanTree(FORWARDED)
+    assert tree.children(T1) == [TI0]
+    assert tree.parent(BA0) is TI1
+    assert tree.parent(ST0) is BA1
+    assert tree.self_time_ms(TI1) == 4.0  # 42 ms call, 38 ms of it in ts-basic-service
+
+
+def test_an_entry_whose_ref_already_matches_the_exit_peer_is_not_moved():
+    # A second exit to the same service, also enclosing the entry, must not steal it.
+    other = _call("T", 2, 0, 11, 59, "ts-ticketinfo-service:15681", TRAVEL)
+    tree = SpanTree([T0, T1, other, TI0])
+    assert tree.parent(TI0) is T1
+
+
+def test_a_mismatched_ref_without_a_matching_enclosing_exit_is_kept():
+    # Peers given as addresses (no service name), or the real caller missing from the trace.
+    by_address = _call("T", 1, 0, 10, 60, "10.42.0.17:8080", TRAVEL)
+    entry = _entry("X", 12, 58, _ref("T", 1), "ts-seat-service")
+    assert SpanTree([T0, by_address, entry]).parent(entry) is by_address
+    assert SpanTree([T0, T1, ST0]).parent(ST0) is T1
+
+
+def test_the_innermost_enclosing_exit_wins():
+    outer = _call("TI", 1, 0, 14, 56, "ts-station-service:12345", "ts-ticketinfo-service")
+    inner = _call("BA", 1, 0, 18, 52, "ts-station-service:12345", "ts-basic-service")
+    tree = SpanTree([T0, T1, TI0, outer, BA0, inner, ST0])
+    assert tree.parent(ST0) is inner
