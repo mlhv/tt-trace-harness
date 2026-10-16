@@ -158,3 +158,26 @@ def test_a_forwarded_ref_to_an_exit_to_the_same_service_yields_to_a_nested_calle
     assert tree.parent(TR0) is P1
     assert tree.parent(SE0) is TR1
     assert tree.parent(TR2) is SE1
+
+
+# Concurrent calls from a thread pool (CUHK-SE travel service with parallel seat calls): each seat entry's
+# ref names its own exit, and sibling exits to the same service from other pool-thread segments overlap
+# it in time. A sibling is not a nested caller: it does not descend from the ref'd exit.
+CUHK_TRAVEL = "ts-travel-service|tt-cuhk|"
+CUHK_SEAT = "ts-seat-service|tt-cuhk|"
+M0 = _entry("M", 0, 62, [], CUHK_TRAVEL)
+
+
+def _pool_call(seg, start, end):
+    local = _span(seg, 0, -1, start, end, refs=_ref("M", 0, "CROSS_THREAD"), service=CUHK_TRAVEL)
+    local["type"] = "Local"
+    return local, _call(seg, 1, 0, start, end, "ts-seat-service:8080", CUHK_TRAVEL)
+
+
+def test_concurrent_sibling_exits_do_not_steal_each_others_entries():
+    pool = [_pool_call(f"W{i}", 44, 59 + (i % 3)) for i in range(6)]
+    entries = [_entry(f"S{i}", 46, 58, _ref(f"W{i}", 1), CUHK_SEAT) for i in range(6)]
+    tree = SpanTree([M0, *[span for pair in pool for span in pair], *entries])
+    for (_, exit_span), entry in zip(pool, entries):
+        assert tree.parent(entry) is exit_span
+        assert tree.children(exit_span) == [entry]

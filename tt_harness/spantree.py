@@ -19,8 +19,8 @@ re-attaches such an entry to the exit that called its service: when the ref'd
 exit's peer host is not the entry's service, the innermost exit whose peer host
 is that service and whose time window holds the entry's start becomes the
 parent. When the ref'd exit's peer host IS the entry's service, a nested exit to
-that service from another segment (inside the ref'd exit's window and running
-when the entry starts) is the real caller: travel -> seat -> travel under a
+that service from another segment (inside the ref'd exit's window, running
+when the entry starts, and below the ref'd exit in the recorded tree) is the real caller: travel -> seat -> travel under a
 forwarded header names the first exit to travel for both travel entries.
 Without such an exit the ref is kept.
 """
@@ -105,10 +105,29 @@ class SpanTree:
                 if candidate["segmentId"] != referenced["segmentId"]
                 and referenced["startTime"] <= candidate["startTime"]
                 and candidate["endTime"] <= referenced["endTime"]
+                and self._descends_from(candidate, span_key(referenced))
             ]
         if not callers:
             return key
         return span_key(max(callers, key=lambda candidate: (candidate["startTime"], -candidate["endTime"])))
+
+    def _descends_from(self, span: dict, ancestor: SpanKey) -> bool:
+        """Whether `ancestor` is on the span's chain of recorded (unrepaired) parents.
+
+        A nested caller sits below the ref'd exit (its segment's entry names that exit, forwarded or
+        not); a concurrent sibling from another thread of the same caller does not.
+        """
+        key = parent_key(span)
+        seen: set[SpanKey] = set()
+        while key is not None and key not in seen:
+            if key == ancestor:
+                return True
+            seen.add(key)
+            parent = self._by_key.get(key)
+            if parent is None:
+                return False
+            key = parent_key(parent)
+        return False
 
     def parent(self, span: dict) -> dict | None:
         key = self._parent_keys.get(span_key(span))
